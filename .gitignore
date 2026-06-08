@@ -1,0 +1,24 @@
+# Maven build output
+target/
+**/target/
+
+# Compiled class files
+*.class
+
+# Maven wrapper downloaded jar (kept: wrapper scripts + .mvn/wrapper/*.properties)
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE
+.vscode/
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

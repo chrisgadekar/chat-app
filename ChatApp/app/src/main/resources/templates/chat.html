@@ -1,67 +1,632 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="light">
 <head>
     <meta charset="UTF-8">
-    <title>Real-Time Chat Application</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Real-Time Chat</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.1/stomp.min.js"></script>
-</head>
-<body>
-<div class="container mt-4">
-    <h1 class = "text-center">Real-Time Chat Application</h1>
-    <div id="chat"
-        class="border rounded p-3 mb-3"
-        style="height: 300px; overflow-y: auto;">
-    </div>
-    <div class = "input-group mb-3">
-        <input id="senderInput" type="text" class="form-control"
-            placeholder="Your Name..."/>
-    </div>
+    <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
+    <style>
+        :root { --accent: #6c5ce7; --accent-2: #8e7bff; }
+        html, body { height: 100%; }
+        body { margin: 0; }
 
-    <div class = "input-group mb-3">
-        <input id="messageInput" type="text" class="form-control"
-               placeholder="Type a Message..."/>
-        <div id="input-group-append">
-            <button id="sendMessage" class="btn btn-primary">Send</button>
+        /* ---- App shell ---- */
+        .app { height: 100vh; display: flex; flex-direction: column; }
+        .app-header {
+            display: flex; align-items: center; gap: .75rem;
+            padding: .5rem 1rem; color: #fff;
+            background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            box-shadow: 0 2px 6px rgba(0,0,0,.15); z-index: 20;
+        }
+        .app-header .brand { font-weight: 700; font-size: 1.1rem; }
+        .app-header .spacer { flex: 1; }
+        .app-header button { color: #fff; }
+        .conn-dot { width: .55rem; height: .55rem; border-radius: 50%; display: inline-block; }
+        .conn-connected { background: #2ecc71; }
+        .conn-connecting { background: #f1c40f; animation: pulse 1s infinite; }
+        .conn-down { background: #e74c3c; animation: pulse 1s infinite; }
+        @keyframes pulse { 50% { opacity: .3; } }
+
+        .app-body { flex: 1; display: flex; min-height: 0; }
+        .sidebar { width: 230px; overflow-y: auto; background: var(--bs-body-bg); border-right: 1px solid var(--bs-border-color); }
+        .sidebar-right { border-right: 0; border-left: 1px solid var(--bs-border-color); }
+        .sidebar .sidebar-title { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; opacity: .6; padding: .9rem 1rem .3rem; }
+
+        .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        .messages { flex: 1; overflow-y: auto; padding: 1rem 1.25rem; position: relative; }
+        .composer { border-top: 1px solid var(--bs-border-color); padding: .6rem .9rem; background: var(--bs-body-bg); }
+
+        /* ---- Channels ---- */
+        .channel { display: flex; align-items: center; gap: .5rem; padding: .45rem 1rem; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; color: var(--bs-body-color); border-radius: .4rem; }
+        .channel:hover { background: var(--bs-secondary-bg); }
+        .channel.active { background: var(--accent); color: #fff; }
+        .channel .hash { opacity: .6; }
+
+        /* ---- Avatars ---- */
+        .avatar { width: 36px; height: 36px; border-radius: 50%; flex: 0 0 36px; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 600; font-size: .85rem; user-select: none; }
+        .avatar.sm { width: 26px; height: 26px; flex-basis: 26px; font-size: .72rem; }
+
+        /* ---- Messages ---- */
+        .msg-row { display: flex; gap: .65rem; padding: .12rem 0; position: relative; }
+        .msg-row.group-start { margin-top: .65rem; }
+        .msg-row.own .msg-text { background: var(--accent); color: #fff; }
+        .msg-row.mentions-me { background: rgba(241,196,15,.12); border-left: 3px solid #f1c40f; padding-left: .5rem; margin-left: -.5rem; border-radius: .25rem; }
+        .msg-avatar-slot { width: 36px; flex: 0 0 36px; }
+        .msg-body { min-width: 0; flex: 1; }
+        .msg-head { display: flex; align-items: baseline; gap: .5rem; }
+        .msg-name { font-weight: 600; font-size: .9rem; }
+        .msg-time { font-size: .72rem; opacity: .55; }
+        .msg-text { display: inline-block; padding: .35rem .6rem; background: var(--bs-secondary-bg); border-radius: .6rem; margin-top: .1rem; word-wrap: break-word; max-width: 100%; animation: fadein .18s ease; }
+        @keyframes fadein { from { opacity: 0; transform: translateY(4px); } }
+        .mention { font-weight: 600; background: #fff3cd; color: #664d03; border-radius: .25rem; padding: 0 .2rem; }
+        .own .mention { background: rgba(255,255,255,.25); color: #fff; }
+
+        /* system + date */
+        .system-line { text-align: center; margin: .5rem 0; }
+        .date-sep { text-align: center; margin: 1rem 0 .25rem; position: relative; }
+        .date-sep span { background: var(--bs-body-bg); padding: 0 .75rem; font-size: .75rem; opacity: .6; position: relative; z-index: 1; }
+        .date-sep:before { content: ""; position: absolute; left: 0; right: 0; top: 50%; border-top: 1px solid var(--bs-border-color); }
+
+        /* reactions */
+        .reactions { margin-top: .2rem; }
+        .reaction-chip { font-size: .78rem; border: 1px solid var(--bs-border-color); border-radius: 1rem; padding: 0 .45rem; margin-right: .25rem; background: var(--bs-body-bg); cursor: pointer; }
+        .reaction-chip.mine { border-color: var(--accent); background: rgba(108,92,231,.12); }
+        .react-toolbar { position: absolute; top: -.6rem; right: 0; display: none; gap: .1rem; background: var(--bs-body-bg); border: 1px solid var(--bs-border-color); border-radius: 1rem; padding: .1rem .25rem; box-shadow: 0 2px 8px rgba(0,0,0,.12); z-index: 5; }
+        .msg-row:hover .react-toolbar { display: flex; }
+        .react-toolbar span { cursor: pointer; padding: 0 .12rem; font-size: 1rem; }
+        .react-toolbar span:hover { transform: scale(1.25); }
+
+        /* typing dots */
+        .typing { display: flex; align-items: center; gap: .4rem; font-size: .8rem; opacity: .7; height: 1.25rem; }
+        .dots span { display: inline-block; width: .35rem; height: .35rem; border-radius: 50%; background: currentColor; margin: 0 1px; animation: bounce 1.2s infinite; }
+        .dots span:nth-child(2) { animation-delay: .2s; }
+        .dots span:nth-child(3) { animation-delay: .4s; }
+        @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); opacity: .4; } 30% { transform: translateY(-4px); opacity: 1; } }
+
+        /* online list */
+        .user-item { display: flex; align-items: center; gap: .5rem; padding: .35rem 1rem; }
+        .online-dot { width: .5rem; height: .5rem; border-radius: 50%; background: #2ecc71; }
+
+        /* scroll-to-bottom pill */
+        .scroll-pill { position: absolute; bottom: 1rem; left: 50%; transform: translateX(-50%); display: none; z-index: 8; }
+
+        /* empty state */
+        .empty-state { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; opacity: .5; gap: .5rem; }
+
+        /* emoji picker */
+        .emoji-pop { display: none; position: absolute; bottom: 110%; left: 0; z-index: 30; flex-wrap: wrap; max-width: 16rem; }
+        .emoji-pop span { cursor: pointer; padding: .15rem .25rem; font-size: 1.15rem; }
+        .emoji-pop span:hover { background: var(--bs-secondary-bg); border-radius: .25rem; }
+
+        /* custom scrollbar */
+        .messages::-webkit-scrollbar, .sidebar::-webkit-scrollbar { width: 8px; }
+        .messages::-webkit-scrollbar-thumb, .sidebar::-webkit-scrollbar-thumb { background: var(--bs-border-color); border-radius: 4px; }
+
+        textarea#messageInput { resize: none; max-height: 8rem; overflow-y: auto; }
+
+        @media (max-width: 768px) {
+            .sidebar { position: absolute; top: 0; bottom: 0; z-index: 15; box-shadow: 0 0 20px rgba(0,0,0,.2); display: none; }
+            .sidebar.open { display: block; }
+            .sidebar-right { right: 0; }
+        }
+    </style>
+</head>
+<body class="bg-body-tertiary">
+
+<!-- Join screen -->
+<div id="join-view" class="d-flex align-items-center justify-content-center" style="height:100vh;">
+    <div class="card shadow" style="width: 22rem;">
+        <div class="card-body">
+            <h4 class="card-title mb-1"><i class="bi bi-chat-dots-fill" style="color:var(--accent)"></i> Real-Time Chat</h4>
+            <p class="text-muted small mb-3">Pick a name to get started</p>
+            <input id="nameInput" type="text" class="form-control mb-1" placeholder="Your name..." maxlength="24" autocomplete="off"/>
+            <div id="nameError" class="text-danger small mb-2" style="min-height:1rem;"></div>
+            <button id="joinButton" class="btn w-100 text-white" style="background:var(--accent)">Join Chat</button>
         </div>
     </div>
-
 </div>
-</body>
+
+<!-- App -->
+<div id="chat-view" class="app" style="display:none;">
+    <header class="app-header">
+        <button id="toggleChannels" class="btn btn-sm d-md-none border-0"><i class="bi bi-list"></i></button>
+        <span class="brand"><i class="bi bi-chat-dots-fill"></i> ChatApp</span>
+        <span id="roomLabel" class="badge text-bg-light"></span>
+        <span class="spacer"></span>
+        <span class="d-flex align-items-center gap-1 small"><span id="connDot" class="conn-dot conn-connecting"></span><span id="connText">connecting…</span></span>
+        <button id="soundBtn" class="btn btn-sm border-0" title="Toggle sound"><i class="bi bi-bell-fill"></i></button>
+        <button id="themeBtn" class="btn btn-sm border-0" title="Toggle theme"><i class="bi bi-moon-stars-fill"></i></button>
+        <span class="d-flex align-items-center gap-2"><span id="meAvatar" class="avatar sm"></span><span id="meLabel" class="small fw-semibold d-none d-sm-inline"></span></span>
+    </header>
+
+    <div class="app-body">
+        <!-- Channels -->
+        <aside id="sidebarLeft" class="sidebar">
+            <div class="sidebar-title">Channels</div>
+            <div id="channelList" class="px-2 pb-2"></div>
+        </aside>
+
+        <!-- Messages -->
+        <main class="chat-main">
+            <div id="messages" class="messages">
+                <button id="scrollPill" class="btn btn-sm text-white scroll-pill" style="background:var(--accent)"><i class="bi bi-arrow-down"></i> <span id="scrollPillText">New messages</span></button>
+            </div>
+            <div id="typingIndicator" class="typing px-3"></div>
+            <div class="composer">
+                <div class="input-group position-relative">
+                    <button id="emojiButton" class="btn btn-outline-secondary" type="button"><i class="bi bi-emoji-smile"></i></button>
+                    <textarea id="messageInput" rows="1" class="form-control" placeholder="Message  (Enter to send · Shift+Enter for newline)"></textarea>
+                    <button id="sendMessage" class="btn text-white" style="background:var(--accent)"><i class="bi bi-send-fill"></i></button>
+                    <div id="emojiPop" class="emoji-pop card shadow p-2"></div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Online -->
+        <aside id="sidebarRight" class="sidebar sidebar-right d-none d-lg-block">
+            <div class="sidebar-title">Online — <span id="userCount">0</span></div>
+            <div id="userList"></div>
+        </aside>
+    </div>
+</div>
+
 <script>
-    function setConnected(connected){
-        document.getElementById('sendMessage').disabled = !connected;
+    const PICKER_EMOJIS = ['😀','😂','😍','😎','🤔','😢','😡','👍','🙏','🎉','🔥','❤️','✅','💯','👀','🚀'];
+    const REACTION_EMOJIS = ['👍','❤️','😂','🎉','😮','😢'];
+    const AVATAR_COLORS = ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#1abc9c','#3498db','#9b59b6','#e84393','#00b894','#0984e3'];
+
+    let client = null;
+    let username = null;
+    let currentRoom = null;
+    let rooms = [];
+    let subs = [];
+    let initialized = false;
+    let canSendTyping = true;
+    let soundEnabled = true;
+    let unread = 0;
+    const baseTitle = 'Real-Time Chat';
+
+    const typingUsers = {};
+    const reactionState = {};   // messageId -> { emoji -> Set(senders) }
+    const msgEls = {};          // messageId -> { reactions: <div> }
+
+    // render bookkeeping (reset per room)
+    let lastSender = null, lastTs = 0, lastDateKey = null;
+
+    // ---------- helpers ----------
+    function hashCode(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
+    function avatarColor(name) { return AVATAR_COLORS[hashCode(name) % AVATAR_COLORS.length]; }
+    function initials(name) { const p = name.trim().split(/\s+/); return (p.length > 1 ? p[0][0] + p[1][0] : name.slice(0, 2)).toUpperCase(); }
+    function makeAvatar(name, small) {
+        const a = document.createElement('span');
+        a.className = 'avatar' + (small ? ' sm' : '');
+        a.style.background = avatarColor(name);
+        a.textContent = initials(name);
+        return a;
     }
-    function connect(){
-        var socket = new SockJS('/chat');
-        stompClient = Stomp.over(socket);
-        stompClient.connect({}, function (frame) {
-            setConnected(true);
-            stompClient.subscribe('/topic/messages', function (message){
-                showMessage(JSON.parse(message.body));
-                });
+    function exactTime(ts) { return new Date(ts).toLocaleString(); }
+    function relTime(ts) {
+        const d = (Date.now() - ts) / 1000;
+        if (d < 45) return 'just now';
+        if (d < 3600) return Math.floor(d / 60) + 'm ago';
+        if (d < 86400) return Math.floor(d / 3600) + 'h ago';
+        return new Date(ts).toLocaleDateString();
+    }
+    function dateLabel(ts) {
+        const d = new Date(ts); const now = new Date();
+        const same = (a, b) => a.toDateString() === b.toDateString();
+        if (same(d, now)) return 'Today';
+        const y = new Date(now); y.setDate(now.getDate() - 1);
+        if (same(d, y)) return 'Yesterday';
+        return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+    }
+    function beep() {
+        if (!soundEnabled) return;
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const o = ctx.createOscillator(), g = ctx.createGain();
+            o.connect(g); g.connect(ctx.destination);
+            o.frequency.value = 660; o.type = 'sine';
+            g.gain.setValueAtTime(.0001, ctx.currentTime);
+            g.gain.exponentialRampToValueAtTime(.15, ctx.currentTime + .01);
+            g.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + .25);
+            o.start(); o.stop(ctx.currentTime + .26);
+        } catch (e) {}
+    }
+    function bumpUnread() {
+        if (document.hidden) { unread++; document.title = '(' + unread + ') ' + baseTitle; }
+    }
+
+    // build text with @mentions, XSS-safe
+    function buildContent(text) {
+        const frag = document.createDocumentFragment();
+        let mentionsMe = false;
+        (text || '').split(/(\s+)/).forEach(function (tok) {
+            const m = tok.match(/^@([\w-]{1,24})$/);
+            if (m) {
+                const s = document.createElement('span'); s.className = 'mention'; s.textContent = tok; frag.appendChild(s);
+                if (m[1].toLowerCase() === username.toLowerCase()) mentionsMe = true;
+            } else { frag.appendChild(document.createTextNode(tok)); }
+        });
+        return { frag: frag, mentionsMe: mentionsMe };
+    }
+
+    // ---------- scroll handling ----------
+    function nearBottom() {
+        const m = document.getElementById('messages');
+        return m.scrollHeight - m.scrollTop - m.clientHeight < 80;
+    }
+    function scrollToBottom() {
+        const m = document.getElementById('messages');
+        m.scrollTop = m.scrollHeight;
+        hidePill();
+    }
+    let pendingNew = 0;
+    function showPill() {
+        pendingNew++;
+        const pill = document.getElementById('scrollPill');
+        document.getElementById('scrollPillText').textContent = pendingNew + ' new message' + (pendingNew > 1 ? 's' : '');
+        pill.style.display = 'block';
+    }
+    function hidePill() { pendingNew = 0; document.getElementById('scrollPill').style.display = 'none'; }
+
+    // ---------- rendering ----------
+    function clearMessages() {
+        const m = document.getElementById('messages');
+        m.querySelectorAll('.msg-row, .system-line, .date-sep, .empty-state').forEach(function (n) { n.remove(); });
+        lastSender = null; lastTs = 0; lastDateKey = null;
+        showEmptyState();
+    }
+    function showEmptyState() {
+        const m = document.getElementById('messages');
+        if (m.querySelector('.msg-row') || m.querySelector('.empty-state')) return;
+        const e = document.createElement('div');
+        e.className = 'empty-state';
+        e.innerHTML = '<i class="bi bi-chat-heart" style="font-size:2rem"></i><div>No messages yet — say hi! 👋</div>';
+        m.appendChild(e);
+    }
+    function removeEmptyState() {
+        const e = document.getElementById('messages').querySelector('.empty-state');
+        if (e) e.remove();
+    }
+
+    function maybeDateSep(ts) {
+        const key = new Date(ts).toDateString();
+        if (key !== lastDateKey) {
+            lastDateKey = key;
+            const sep = document.createElement('div');
+            sep.className = 'date-sep';
+            const s = document.createElement('span'); s.textContent = dateLabel(ts);
+            sep.appendChild(s);
+            document.getElementById('messages').appendChild(sep);
+            lastSender = null; // force group restart after a date break
+        }
+    }
+
+    function renderMessage(message) {
+        if (message.type === 'TYPING') { handleTyping(message); return; }
+        if (message.type === 'REACTION') { applyReaction(message); return; }
+
+        const m = document.getElementById('messages');
+        const wasBottom = nearBottom();
+        removeEmptyState();
+
+        if (message.type === 'JOIN' || message.type === 'LEAVE') {
+            const line = document.createElement('div');
+            line.className = 'system-line';
+            const badge = document.createElement('span');
+            badge.className = 'badge ' + (message.type === 'JOIN' ? 'text-bg-success' : 'text-bg-secondary');
+            badge.style.opacity = '.85';
+            badge.textContent = message.content;
+            line.appendChild(badge);
+            m.appendChild(line);
+            lastSender = null;
+            finishAppend(wasBottom, false);
+            return;
+        }
+
+        const ts = message.timestamp || Date.now();
+        maybeDateSep(ts);
+        const own = message.sender === username;
+        const grouped = message.sender === lastSender && (ts - lastTs) < 5 * 60 * 1000;
+
+        const row = document.createElement('div');
+        row.className = 'msg-row' + (own ? ' own' : '') + (grouped ? '' : ' group-start');
+
+        const slot = document.createElement('div');
+        slot.className = 'msg-avatar-slot';
+        if (!grouped) slot.appendChild(makeAvatar(message.sender, false));
+        row.appendChild(slot);
+
+        const body = document.createElement('div');
+        body.className = 'msg-body';
+        if (!grouped) {
+            const head = document.createElement('div');
+            head.className = 'msg-head';
+            const nm = document.createElement('span'); nm.className = 'msg-name'; nm.style.color = avatarColor(message.sender);
+            nm.textContent = own ? username + ' (you)' : message.sender;
+            const tm = document.createElement('span'); tm.className = 'msg-time'; tm.dataset.ts = ts; tm.title = exactTime(ts); tm.textContent = relTime(ts);
+            head.appendChild(nm); head.appendChild(tm);
+            body.appendChild(head);
+        }
+
+        const textWrap = document.createElement('div');
+        const text = document.createElement('div'); text.className = 'msg-text';
+        const built = buildContent(message.content);
+        text.appendChild(built.frag);
+        textWrap.appendChild(text);
+        body.appendChild(textWrap);
+        if (built.mentionsMe && !own) row.classList.add('mentions-me');
+
+        const reactions = document.createElement('div'); reactions.className = 'reactions';
+        body.appendChild(reactions);
+
+        // hover reaction toolbar
+        const toolbar = document.createElement('div'); toolbar.className = 'react-toolbar';
+        REACTION_EMOJIS.forEach(function (emoji) {
+            const e = document.createElement('span'); e.textContent = emoji;
+            e.onclick = function () { sendReaction(message.id, emoji); };
+            toolbar.appendChild(e);
+        });
+        row.appendChild(body);
+        row.appendChild(toolbar);
+
+        m.appendChild(row);
+        lastSender = message.sender; lastTs = ts;
+
+        if (message.id) { msgEls[message.id] = { reactions: reactions }; renderReactions(message.id); }
+
+        finishAppend(wasBottom, own);
+        if (!own) { bumpUnread(); beep(); }
+    }
+
+    function finishAppend(wasBottom, own) {
+        if (own || wasBottom) scrollToBottom();
+        else showPill();
+    }
+
+    function applyReaction(message) {
+        const id = message.targetId, emoji = message.emoji;
+        if (!id || !emoji) return;
+        const byEmoji = reactionState[id] || (reactionState[id] = {});
+        const senders = byEmoji[emoji] || (byEmoji[emoji] = new Set());
+        if (senders.has(message.sender)) senders.delete(message.sender); else senders.add(message.sender);
+        renderReactions(id);
+    }
+    function renderReactions(id) {
+        const holder = msgEls[id]; if (!holder) return;
+        const c = holder.reactions; c.innerHTML = '';
+        const byEmoji = reactionState[id] || {};
+        Object.keys(byEmoji).forEach(function (emoji) {
+            const senders = byEmoji[emoji]; if (!senders || senders.size === 0) return;
+            const chip = document.createElement('span');
+            chip.className = 'reaction-chip' + (senders.has(username) ? ' mine' : '');
+            chip.textContent = emoji + ' ' + senders.size;
+            chip.title = Array.from(senders).join(', ');
+            chip.onclick = function () { sendReaction(id, emoji); };
+            c.appendChild(chip);
         });
     }
-        function showMessage(message){
-        var chat = document.getElementById('chat');
-        var messageElement = document.createElement('div');
-        messageElement.textContent = message.sender + ':' + message.content;
-        messageElement.class = "border-bottom mb-1";
-        chat.appendChild(messageElement)
-        chat.scrollTop = chat.scrollHeight;
-        }
-         function sendMessage(){
-         var sender = document.getElementById('senderInput').value;
-         var content = document.getElementById('messageInput').value;
-         var chatMessage = {
-            sender: sender,
-            content: content
+
+    function renderUsers(users) {
+        const list = document.getElementById('userList'); list.innerHTML = '';
+        users.forEach(function (u) {
+            const item = document.createElement('div'); item.className = 'user-item';
+            item.appendChild(makeAvatar(u, true));
+            const nm = document.createElement('span'); nm.className = 'small'; nm.textContent = (u === username ? u + ' (you)' : u);
+            const dot = document.createElement('span'); dot.className = 'online-dot ms-auto';
+            item.appendChild(nm); item.appendChild(dot);
+            list.appendChild(item);
+        });
+        document.getElementById('userCount').textContent = users.length;
+    }
+
+    function renderTyping() {
+        const names = Object.keys(typingUsers);
+        const el = document.getElementById('typingIndicator');
+        if (names.length === 0) { el.innerHTML = ''; return; }
+        let who = names.length === 1 ? names[0] + ' is typing'
+            : names.length === 2 ? names.join(' and ') + ' are typing'
+            : 'Several people are typing';
+        el.innerHTML = '<span>' + who + '</span><span class="dots"><span></span><span></span><span></span></span>';
+    }
+    function handleTyping(message) {
+        if (message.sender === username) return;
+        typingUsers[message.sender] = Date.now();
+        renderTyping();
+        setTimeout(function () {
+            if (typingUsers[message.sender] && Date.now() - typingUsers[message.sender] >= 2000) {
+                delete typingUsers[message.sender]; renderTyping();
             }
-            stompClient.send("/app/sendMessage",{},JSON.stringify(chatMessage));
-            var content = document.getElementById('messageInput').value = '';
-             }
-         document.getElementById('sendMessage').onclick = sendMessage;
-         window.onload = connect;
+        }, 2200);
+    }
+
+    function renderChannels() {
+        const list = document.getElementById('channelList'); list.innerHTML = '';
+        rooms.forEach(function (r) {
+            const b = document.createElement('button');
+            b.className = 'channel' + (r === currentRoom ? ' active' : '');
+            b.innerHTML = '<span class="hash">#</span> ' + r;
+            b.onclick = function () { switchRoom(r); document.getElementById('sidebarLeft').classList.remove('open'); };
+            list.appendChild(b);
+        });
+        document.getElementById('roomLabel').textContent = '#' + currentRoom;
+    }
+
+    // ---------- connection / rooms ----------
+    function setStatus(state) {
+        const dot = document.getElementById('connDot'), txt = document.getElementById('connText');
+        dot.className = 'conn-dot ' + (state === 'connected' ? 'conn-connected' : state === 'down' ? 'conn-down' : 'conn-connecting');
+        txt.textContent = state === 'connected' ? 'connected' : state === 'down' ? 'reconnecting…' : 'connecting…';
+    }
+
+    function joinChat() {
+        const name = document.getElementById('nameInput').value.trim();
+        const err = document.getElementById('nameError');
+        if (!name) { err.textContent = 'Please enter a name to join.'; return; }
+        err.textContent = 'Checking name…';
+        fetch('/api/name-available?name=' + encodeURIComponent(name))
+            .then(function (r) { return r.json(); })
+            .then(function (res) {
+                if (!res.available) { err.textContent = 'That name is taken. Try another.'; return; }
+                username = name;
+                document.getElementById('meLabel').textContent = username;
+                const a = document.getElementById('meAvatar'); a.style.background = avatarColor(username); a.textContent = initials(username);
+                document.getElementById('join-view').style.display = 'none';
+                document.getElementById('chat-view').style.display = 'flex';
+                connect();
+            })
+            .catch(function () { err.textContent = 'Could not reach server.'; });
+    }
+
+    function connect() {
+        client = new StompJs.Client({
+            webSocketFactory: function () { return new SockJS('/chat'); },
+            reconnectDelay: 4000,
+            onConnect: function () {
+                setStatus('connected');
+                if (!initialized) {
+                    initialized = true;
+                    fetch('/api/rooms').then(function (r) { return r.json(); }).then(function (list) {
+                        rooms = list; enterRoom(rooms[0]);
+                        document.getElementById('messageInput').focus();
+                    });
+                } else if (currentRoom) {
+                    subscribeRoom(currentRoom); announce(currentRoom); // re-subscribe after reconnect
+                }
+            },
+            onWebSocketClose: function () { setStatus('down'); },
+            onDisconnect: function () { setStatus('down'); }
+        });
+        client.activate();
+    }
+
+    function subscribeRoom(room) {
+        subs.forEach(function (s) { try { s.unsubscribe(); } catch (e) {} });
+        subs = [];
+        subs.push(client.subscribe('/topic/room/' + room, function (m) { renderMessage(JSON.parse(m.body)); }));
+        subs.push(client.subscribe('/topic/room/' + room + '/users', function (m) { renderUsers(JSON.parse(m.body)); }));
+        subs.push(client.subscribe('/topic/room/' + room + '/typing', function (m) { handleTyping(JSON.parse(m.body)); }));
+    }
+    function announce(room) {
+        client.publish({ destination: '/app/chat/' + room + '/addUser', body: JSON.stringify({ sender: username }) });
+    }
+
+    function switchRoom(room) {
+        if (room === currentRoom) return;
+        client.publish({ destination: '/app/chat/' + currentRoom + '/leave', body: JSON.stringify({ sender: username }) });
+        enterRoom(room);
+    }
+
+    function enterRoom(room) {
+        Object.keys(typingUsers).forEach(function (k) { delete typingUsers[k]; });
+        Object.keys(msgEls).forEach(function (k) { delete msgEls[k]; });
+        Object.keys(reactionState).forEach(function (k) { delete reactionState[k]; });
+        currentRoom = room;
+        renderChannels();
+        clearMessages();
+        document.getElementById('typingIndicator').innerHTML = '';
+        hidePill();
+
+        fetch('/api/rooms/' + room + '/history').then(function (r) { return r.json(); }).then(function (history) {
+            history.forEach(renderMessage);
+            showEmptyState();
+            scrollToBottom();
+            subscribeRoom(room);
+            announce(room);
+        });
+    }
+
+    // ---------- sending ----------
+    function sendMessage() {
+        const input = document.getElementById('messageInput');
+        const content = input.value.trim();
+        if (!content || !client || !client.connected) return;
+        client.publish({ destination: '/app/chat/' + currentRoom + '/send', body: JSON.stringify({ sender: username, content: content }) });
+        input.value = ''; autoGrow();
+    }
+    function sendReaction(messageId, emoji) {
+        if (!client || !client.connected || !messageId) return;
+        client.publish({ destination: '/app/chat/' + currentRoom + '/react', body: JSON.stringify({ sender: username, targetId: messageId, emoji: emoji }) });
+    }
+    function notifyTyping() {
+        if (!canSendTyping || !client || !client.connected) return;
+        client.publish({ destination: '/app/chat/' + currentRoom + '/typing', body: JSON.stringify({ sender: username }) });
+        canSendTyping = false;
+        setTimeout(function () { canSendTyping = true; }, 1000);
+    }
+
+    // ---------- input / emoji ----------
+    function autoGrow() {
+        const t = document.getElementById('messageInput');
+        t.style.height = 'auto';
+        t.style.height = Math.min(t.scrollHeight, 128) + 'px';
+    }
+    function buildEmojiPicker() {
+        const pop = document.getElementById('emojiPop');
+        PICKER_EMOJIS.forEach(function (emoji) {
+            const span = document.createElement('span'); span.textContent = emoji;
+            span.onclick = function () {
+                const input = document.getElementById('messageInput');
+                input.value += emoji; input.focus(); autoGrow(); pop.style.display = 'none';
+            };
+            pop.appendChild(span);
+        });
+    }
+
+    // ---------- theme / sound ----------
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-bs-theme', theme);
+        try { localStorage.setItem('chat-theme', theme); } catch (e) {}
+        document.querySelector('#themeBtn i').className = theme === 'dark' ? 'bi bi-sun-fill' : 'bi bi-moon-stars-fill';
+    }
+
+    // ---------- wiring ----------
+    document.getElementById('joinButton').onclick = joinChat;
+    document.getElementById('nameInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); joinChat(); } });
+
+    document.getElementById('sendMessage').onclick = sendMessage;
+    const msgInput = document.getElementById('messageInput');
+    msgInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+    msgInput.addEventListener('input', function () { autoGrow(); notifyTyping(); });
+
+    document.getElementById('emojiButton').onclick = function (e) {
+        e.preventDefault();
+        const pop = document.getElementById('emojiPop');
+        pop.style.display = pop.style.display === 'flex' ? 'none' : 'flex';
+    };
+
+    document.getElementById('scrollPill').onclick = scrollToBottom;
+    document.getElementById('messages').addEventListener('scroll', function () { if (nearBottom()) hidePill(); });
+
+    document.getElementById('themeBtn').onclick = function () {
+        const cur = document.documentElement.getAttribute('data-bs-theme');
+        applyTheme(cur === 'dark' ? 'light' : 'dark');
+    };
+    document.getElementById('soundBtn').onclick = function () {
+        soundEnabled = !soundEnabled;
+        document.querySelector('#soundBtn i').className = soundEnabled ? 'bi bi-bell-fill' : 'bi bi-bell-slash-fill';
+    };
+    document.getElementById('toggleChannels').onclick = function () {
+        document.getElementById('sidebarLeft').classList.toggle('open');
+    };
+
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) { unread = 0; document.title = baseTitle; } });
+
+    // periodically refresh relative timestamps
+    setInterval(function () {
+        document.querySelectorAll('.msg-time[data-ts]').forEach(function (el) { el.textContent = relTime(Number(el.dataset.ts)); });
+    }, 30000);
+
+    // init
+    try { applyTheme(localStorage.getItem('chat-theme') || 'light'); } catch (e) { applyTheme('light'); }
+    buildEmojiPicker();
+    document.getElementById('nameInput').focus();
 </script>
+</body>
 </html>
